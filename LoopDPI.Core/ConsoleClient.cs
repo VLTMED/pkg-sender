@@ -206,6 +206,45 @@ public static class ConsoleClient
             return (false, -1);
         return (body.Contains("\"exists\":true"), LongField(body, "size"));
     }
+    /// <summary>
+    /// Real install outcome from /api/status (not just "request queued").
+    /// Result: "none" (nothing finished yet this console session),
+    /// "ok" (sceAppInstUtilInstallByPackage returned 0), or "fail" (Code
+    /// holds the SCE error, e.g. "0x80020001"). At is the console's own
+    /// clock (unix seconds) the install finished, for matching against
+    /// when this push started.
+    /// </summary>
+    public static async Task<(string Result, string Code, string Name, long At)> GetLastInstallAsync(string psIp)
+    {
+        string? body = await GetAnyAsync(psIp, "/api/status", 10);
+        if (body == null)
+            return ("none", "", "", 0);
+        return (StrField(body, "lastResult"), StrField(body, "lastCode"),
+            StrField(body, "lastName"), LongField(body, "lastAt"));
+    }
+
+    /// <summary>
+    /// Poll /api/status until the install queue drains, then confirm the
+    /// console actually finished (not just accepted) this push: busy
+    /// clears AND the most recent lastAt is at/after startedAtUnix.
+    /// False on timeout, a finished result older than the push, or a
+    /// "fail" result (Reason explains which).
+    /// </summary>
+    public static async Task<(bool Ok, string Reason)> ConfirmInstallAsync(
+        string psIp, long startedAtUnix, int timeoutSeconds = 1800)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.Elapsed.TotalSeconds < timeoutSeconds)
+        {
+            var (busy, _) = await GetStatusAsync(psIp);
+            var (result, code, _, at) = await GetLastInstallAsync(psIp);
+            if (!busy && result != "none" && at >= startedAtUnix)
+                return result == "ok" ? (true, "") : (false, $"PS4 reported install failure {code}");
+            await Task.Delay(2000);
+        }
+        return (false, "timed out waiting for console to confirm install");
+    }
+
     private static string JsonEscape(string s) =>
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", " ");
 }

@@ -1,0 +1,44 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'droid/**'
+      - 'LoopDPI.Core/**'
+      - '.github/workflows/android.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install Android workload
+        run: dotnet workload install android
+
+      - name: Build unsigned APK (Release)
+        run: >
+          dotnet build droid/PkgSender.Droid.csproj -c Release -f net8.0-android
+          /p:AndroidPackageFormat=apk
+          --nologo
+
+      - name: Locate and rename APK
+        run: |
+          VER=$(sed -n 's/.*<ApplicationDisplayVersion>\([^<]*\)<.*/\1/p' droid/PkgSender.Droid.csproj | head -1); VER=${VER:-1.0.1}
+          APK=$(find droid/bin/Release -name "*-Signed.apk" -o -name "com.loopayeh.pkgsender*.apk" | head -1)
+          if [ -z "$APK" ]; then APK=$(find droid/bin/Release -name "*.apk" | head -1); fi
+          echo "found: $APK"
+          cp "$APK" "PkgSender-${VER}-android.apk"
+          ls -la *.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: 'PkgSender-*-android.apk'

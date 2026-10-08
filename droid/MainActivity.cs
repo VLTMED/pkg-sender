@@ -2280,30 +2280,11 @@ public sealed class MainActivity : Activity
         _testBtn!.Enabled = false;
         if (_detectBtn != null) _detectBtn.Enabled = false;
         RunOnUiThread(() => RefreshLib()); // rebuild rows with locked checkboxes
-        // keep Wi-Fi/CPU awake: doze or Wi-Fi power-save dropping the
-        // server mid-transfer looks like a random "copy failed" on console
-        Android.Net.Wifi.WifiManager.WifiLock? wl = null;
-        PowerManager.WakeLock? cpu = null;
-        try
-        {
-            try
-            {
-                var wifi = (Android.Net.Wifi.WifiManager?)GetSystemService(WifiService);
-                wl = wifi?.CreateWifiLock(Android.Net.WifiMode.FullHighPerf, "pkgsender:send");
-                wl?.SetReferenceCounted(false);
-                wl?.Acquire();
-            }
-            catch { }
-            try
-            {
-                var pm = (PowerManager?)GetSystemService(PowerService);
-                cpu = pm?.NewWakeLock(WakeLockFlags.Partial, "pkgsender:send");
-                cpu?.SetReferenceCounted(false);
-                cpu?.Acquire(30 * 60 * 1000L);
-            }
-            catch { }
-        }
-        catch { }
+        // Foreground service holds the WakeLock/WifiLock and keeps the
+        // socket alive under Doze/App Standby and OEM battery managers —
+        // this is what the old Activity-held locks couldn't guarantee
+        // once the screen locked or the app left the foreground.
+        try { TransferForegroundService.Start(this, $"إرسال {queue.Count} ملف إلى {psIp}"); } catch { }
         RunOnUiThread(() => { _prog!.Max = queue.Count; _prog.SetProgressCompat(0, false); _prog.Visibility = ViewStates.Visible; });
         try
         {
@@ -2325,10 +2306,7 @@ public sealed class MainActivity : Activity
         catch (Exception ex) { Say("error: " + Short(ex.Message)); }
         finally
         {
-            try { if (wl?.IsHeld == true) wl.Release(); } catch { }
-            try { if (cpu?.IsHeld == true) cpu.Release(); } catch { }
-            try { wl?.Dispose(); } catch { }
-            try { cpu?.Dispose(); } catch { }
+            try { TransferForegroundService.Stop(this); } catch { }
             _busy = false;
             // done items leave the queue (unticked); failed stay ticked for retry
             lock (_lib) foreach (var q in queue) if (q.State.StartsWith("done")) q.Queued = false;

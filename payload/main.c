@@ -420,6 +420,14 @@ typedef struct install_job {
 /* active install count for GET /api/status (multi-PKG queue pacing) */
 static volatile int g_active_installs = 0;
 
+/* result of the most recently finished install, so the sender app can
+ * confirm real delivery (not just "job queued") by polling /api/status.
+ * rc: INT32_MAX = no install finished yet this session. */
+static volatile int g_last_rc = 0x7fffffff;
+static char g_last_name[256] = "";
+static volatile time_t g_last_at = 0;
+static pthread_mutex_t g_last_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* last raw request line, for /api/dbg */
 static char g_last_req[256] = "";
 /* last PC auto-announce (UDP 12802), re-served as GET /api/pc. */
@@ -446,6 +454,14 @@ install_worker(void *arg)
 		snprintf(toast, sizeof(toast), "Loopayeh: install failed %s",
 		    install_err_text(rc, err, sizeof(err)));
 	notify_user(toast);
+
+	/* publish the real outcome for /api/status (delivery confirmation) */
+	pthread_mutex_lock(&g_last_lock);
+	g_last_rc = rc;
+	snprintf(g_last_name, sizeof(g_last_name), "%s", name);
+	g_last_at = time(NULL);
+	pthread_mutex_unlock(&g_last_lock);
+
 	__sync_fetch_and_sub(&g_active_installs, 1);
 	free(job);
 	return NULL;
@@ -2179,17 +2195,32 @@ handle_client(int fd)
 		send_json(fd, out);
 	} else if (!strcmp(method, "GET") &&
 	           !strncmp(path, "/api/status", 11)) {
-		char out[256];
+		char out[512];
+		char lname[256];
+		int lrc;
+		long long lat;
+
+		/* snapshot under lock: install_worker writes these on a
+		 * different thread while this HTTP loop reads them */
+		pthread_mutex_lock(&g_last_lock);
+		lrc = g_last_rc;
+		lat = (long long)g_last_at;
+		json_escape(g_last_name, lname, sizeof(lname));
+		pthread_mutex_unlock(&g_last_lock);
 
 		snprintf(out, sizeof(out), "{\"busy\":%s,\"active\":%d,"
 		    "\"pull\":%s,\"pullName\":\"%s\","
-		    "\"pullGot\":%lld,\"pullWant\":%lld,\"pullPaused\":%s}",
+		    "\"pullGot\":%lld,\"pullWant\":%lld,\"pullPaused\":%s,"
+		    "\"lastResult\":\"%s\",\"lastCode\":\"0x%08X\","
+		    "\"lastName\":\"%s\",\"lastAt\":%lld}",
 		    g_active_installs > 0 ? "true" : "false",
 		    g_active_installs,
 		    g_pull_active ? "true" : "false",
 		    g_pull_active ? g_pull_name : "",
 		    g_pull_got, g_pull_want,
-		    g_pull_paused ? "true" : "false");
+		    g_pull_paused ? "true" : "false",
+		    lrc == 0x7fffffff ? "none" : (lrc == 0 ? "ok" : "fail"),
+		    (unsigned)lrc, lname, lat);
 		send_json(fd, out);
 	} else if (!strcmp(method, "GET") &&
 	           !strncmp(path, "/api/pc", 7)) {

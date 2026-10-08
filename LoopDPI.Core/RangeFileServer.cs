@@ -547,13 +547,44 @@ public sealed class RangeFileServer : IDisposable
             }
             catch (Exception ex)
             {
-                Log($"pkg ERR@{start} {ex.GetType().Name}: {ex.Message}");
+                Log($"pkg ERR@{start} {ex.GetType().Name}: {ex.Message} [{ClassifyFailure(ex)}]");
             }
             // Same socket, next request: the console pipelines 16MB
             // chunks over keep-alive connections instead of reconnecting.
             if (wantKeep && handled++ < 200)
                 goto ReadNext;
         }
+    }
+
+    /// <summary>
+    /// Best-effort human reason for a mid-transfer write failure, so the
+    /// log reads as a diagnosis instead of a raw .NET exception name.
+    /// Based on the SocketError code when present (the reliable signal);
+    /// falls back to message text only when no SocketException is found.
+    /// </summary>
+    private static string ClassifyFailure(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+        {
+            if (e is SocketException se)
+            {
+                return se.SocketErrorCode switch
+                {
+                    SocketError.ConnectionReset or SocketError.ConnectionAborted =>
+                        "network-drop: connection reset by peer/network (Wi-Fi drop, NAT timeout, or PS4-side cancel)",
+                    SocketError.TimedOut => "stalled: no activity before timeout",
+                    SocketError.NetworkUnreachable or SocketError.HostUnreachable =>
+                        "no-route: phone lost the network the console was on",
+                    SocketError.OperationAborted => "aborted: local cancellation (app backgrounded/killed?)",
+                    _ => $"socket-error: {se.SocketErrorCode}",
+                };
+            }
+        }
+        string m = ex.Message;
+        if (m.Contains("connection abort", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("reset", StringComparison.OrdinalIgnoreCase))
+            return "network-drop: connection reset by peer/network (Wi-Fi drop, NAT timeout, or PS4-side cancel)";
+        return "unclassified";
     }
 
     private static string JsonEscape(string s)
